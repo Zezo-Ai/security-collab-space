@@ -3,7 +3,7 @@
 ## Meeting Details
 - **Date**: [DATE]
 - **Time**: 08:30 - 09:30 AM PT
-- **Zoom**: [PLACEHOLDER_ZOOM_LINK]
+- **Zoom**: [Zoom Link]( https://zoom-lfx.platform.linuxfoundation.org/meeting/98301969246?password=889b7578-29b6-4be9-96c1-f74cbce812c4)
 - **Calendar**: https://calendar.openjsf.org
 
 ---
@@ -23,7 +23,6 @@
 ### Issues Labeled `security-agenda`
 [AGENDA_ITEMS]
 
-
 ### Action Items from Previous Meeting
 - [ ] [Review previous action items]
 
@@ -37,11 +36,6 @@
 
 ### [Topic 2]
 [Notes from discussion]
-
-## Q&A, Other
-
-## Next Steps
-- [ ] [Action items with owners and deadlines]
 
 ## Upcoming Meetings
 * **Next Meeting**: [NEXT_MEETING_DATE]
