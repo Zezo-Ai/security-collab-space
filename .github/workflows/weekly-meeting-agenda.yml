@@ -4,6 +4,10 @@ on:
   schedule:
     # Run every Thursday at 4 PM UTC (9 AM PT / 8 AM PST)
     - cron: "0 16 * * 4"
+  # TODO: Remove push trigger after testing
+  push:
+    branches:
+      - add-meeting-agenda-workflow
   workflow_dispatch:
     inputs:
       meeting_date:
