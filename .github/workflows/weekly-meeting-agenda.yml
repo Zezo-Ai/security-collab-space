@@ -1,0 +1,287 @@
+name: Weekly Security Collab Space Meeting Agenda
+
+on:
+  schedule:
+    # Run every Thursday at 4 PM UTC (9 AM PT / 8 AM PST)
+    - cron: "0 16 * * 4"
+  workflow_dispatch:
+    inputs:
+      meeting_date:
+        description: "Meeting date override (YYYY-MM-DD) - defaults to next Monday"
+        required: false
+        type: string
+      force_create:
+        description: "Force create even if issue already exists"
+        required: false
+        default: false
+        type: boolean
+
+env:
+  REPO_OWNER: "openjs-foundation"
+  REPO_NAME: "security-collab-space"
+  AGENDA_LABEL: "security-agenda"
+  ISSUE_LABEL: "security-meeting-agenda"
+  # HackMD team path - the part after hackmd.io/@ in your team URL
+  # Leave empty to create notes in personal workspace
+  HACKMD_TEAM: "openjs-security"
+
+jobs:
+  create-meeting-agenda:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get meeting date info
+        id: meeting-info
+        run: |
+          if [ -n "${{ github.event.inputs.meeting_date }}" ]; then
+            MEETING_DATE_INPUT="${{ github.event.inputs.meeting_date }}"
+            MEETING_DATE=$(date -d "$MEETING_DATE_INPUT" +"%B %d, %Y")
+            MEETING_DATE_SHORT="$MEETING_DATE_INPUT"
+            NEXT_MONDAY=$(date -d "$MEETING_DATE_INPUT + 7 days" +"%B %d, %Y")
+          else
+            # Get next Monday's date
+            MEETING_DATE_SHORT=$(date -d "next monday" +%Y-%m-%d)
+            MEETING_DATE=$(date -d "next monday" +"%B %d, %Y")
+            NEXT_MONDAY=$(date -d "next monday + 7 days" +"%B %d, %Y")
+          fi
+
+          echo "meeting_date=$MEETING_DATE" >> $GITHUB_OUTPUT
+          echo "meeting_date_short=$MEETING_DATE_SHORT" >> $GITHUB_OUTPUT
+          echo "next_meeting_date=$NEXT_MONDAY" >> $GITHUB_OUTPUT
+
+          # Create issue title
+          ISSUE_TITLE="Security Collab Space Meeting - $MEETING_DATE"
+          echo "issue_title=$ISSUE_TITLE" >> $GITHUB_OUTPUT
+
+      - name: Check for existing issue
+        id: check-issue
+        run: |
+          EXISTING_ISSUE=$(gh issue list \
+            --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}" \
+            --label "${{ env.ISSUE_LABEL }}" \
+            --search "${{ steps.meeting-info.outputs.meeting_date_short }} in:title" \
+            --json number,url \
+            --jq '.[0]')
+
+          if [ -n "$EXISTING_ISSUE" ] && [ "$EXISTING_ISSUE" != "null" ]; then
+            echo "existing_issue=true" >> $GITHUB_OUTPUT
+            echo "issue_number=$(echo $EXISTING_ISSUE | jq -r '.number')" >> $GITHUB_OUTPUT
+            echo "issue_url=$(echo $EXISTING_ISSUE | jq -r '.url')" >> $GITHUB_OUTPUT
+          else
+            echo "existing_issue=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch issues with security-agenda label
+        id: fetch-agenda-issues
+        run: |
+          # Fetch all open issues with the security-agenda label
+          AGENDA_ISSUES=$(gh issue list \
+            --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}" \
+            --label "${{ env.AGENDA_LABEL }}" \
+            --state open \
+            --json number,title,url \
+            --jq '.[] | "- [ ] [#\(.number)](\(.url)) - \(.title)"')
+
+          if [ -z "$AGENDA_ISSUES" ]; then
+            AGENDA_ISSUES="*No issues currently labeled with \`${{ env.AGENDA_LABEL }}\`*"
+          fi
+
+          # Count the issues
+          ISSUE_COUNT=$(gh issue list \
+            --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}" \
+            --label "${{ env.AGENDA_LABEL }}" \
+            --state open \
+            --json number \
+            --jq 'length')
+
+          # Save to file to handle multi-line content
+          echo "$AGENDA_ISSUES" > /tmp/agenda_issues.md
+
+          echo "issue_count=$ISSUE_COUNT" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Load and prepare HackMD template
+        id: prepare-hackmd
+        run: |
+          # Read the template
+          TEMPLATE_CONTENT=$(cat .github/templates/hackmd-agenda-template.md)
+
+          # Read agenda issues
+          AGENDA_ITEMS=$(cat /tmp/agenda_issues.md)
+
+          # Replace placeholders
+          TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\[DATE\]/${{ steps.meeting-info.outputs.meeting_date }}}"
+          TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\[NEXT_MEETING_DATE\]/${{ steps.meeting-info.outputs.next_meeting_date }}}"
+          TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\[AGENDA_ITEMS\]/$AGENDA_ITEMS}"
+
+          # Save to file for API call
+          echo "$TEMPLATE_CONTENT" > /tmp/hackmd_content.md
+
+      - name: Create HackMD document
+        id: create-hackmd
+        if: steps.check-issue.outputs.existing_issue == 'false' || github.event.inputs.force_create == 'true'
+        run: |
+          # Read prepared content
+          HACKMD_CONTENT=$(cat /tmp/hackmd_content.md)
+
+          # Determine API endpoint based on team setting
+          if [ -n "${{ env.HACKMD_TEAM }}" ]; then
+            HACKMD_API_URL="https://api.hackmd.io/v1/teams/${{ env.HACKMD_TEAM }}/notes"
+          else
+            HACKMD_API_URL="https://api.hackmd.io/v1/notes"
+          fi
+
+          echo "Creating HackMD document at: $HACKMD_API_URL"
+
+          # Create HackMD document via API
+          HACKMD_RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.HACKMD_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"title\": \"Security Collab Space Meeting - ${{ steps.meeting-info.outputs.meeting_date }}\",
+              \"content\": $(echo "$HACKMD_CONTENT" | jq -Rs .),
+              \"readPermission\": \"guest\",
+              \"writePermission\": \"signed_in\",
+              \"commentPermission\": \"everyone\"
+            }" \
+            "$HACKMD_API_URL")
+
+          # Extract the publish link
+          HACKMD_ID=$(echo "$HACKMD_RESPONSE" | jq -r '.id // empty')
+          HACKMD_PUBLISH_LINK=$(echo "$HACKMD_RESPONSE" | jq -r '.publishLink // empty')
+
+          if [ -z "$HACKMD_ID" ]; then
+            echo "Error creating HackMD document:"
+            echo "$HACKMD_RESPONSE"
+            exit 1
+          fi
+
+          # If no publish link, construct it with team path if available
+          if [ -z "$HACKMD_PUBLISH_LINK" ] || [ "$HACKMD_PUBLISH_LINK" == "null" ]; then
+            if [ -n "${{ env.HACKMD_TEAM }}" ]; then
+              HACKMD_PUBLISH_LINK="https://hackmd.io/@${{ env.HACKMD_TEAM }}/$HACKMD_ID"
+            else
+              HACKMD_PUBLISH_LINK="https://hackmd.io/$HACKMD_ID"
+            fi
+          fi
+
+          echo "hackmd_url=$HACKMD_PUBLISH_LINK" >> $GITHUB_OUTPUT
+          echo "hackmd_id=$HACKMD_ID" >> $GITHUB_OUTPUT
+
+          echo "HackMD document created: $HACKMD_PUBLISH_LINK"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update HackMD content with issue URL
+        if: steps.create-hackmd.outputs.hackmd_id != ''
+        run: |
+          # This step will update the HackMD doc after the issue is created
+          # to include the issue URL (handled in next step)
+          echo "HackMD document ready for issue URL update"
+
+      - name: Create GitHub Issue
+        id: create-issue
+        if: steps.check-issue.outputs.existing_issue == 'false' || github.event.inputs.force_create == 'true'
+        run: |
+          HACKMD_URL="${{ steps.create-hackmd.outputs.hackmd_url }}"
+
+          # Read agenda items for the issue body
+          AGENDA_ITEMS=$(cat /tmp/agenda_issues.md)
+
+          # Create issue body following the CPC format
+          ISSUE_BODY=$(cat << 'EOF'
+          # Security Collab Space Meeting - ${{ steps.meeting-info.outputs.meeting_date }}
+
+          ## Meeting Details
+          - **Date**: ${{ steps.meeting-info.outputs.meeting_date }}
+          - **Time**: 08:30 – 09:30 AM PT
+          - **Zoom**: https://zoom-lfx.platform.linuxfoundation.org/meeting/98301969246?password=889b7578-29b6-4be9-96c1-f74cbce812c4
+          - **Calendar**: [OpenJS Calendar](https://calendar.openjsf.org)
+
+          ---
+
+          ## Meeting Agenda Items
+
+          The following issues are labeled with \`security-agenda\` and will be discussed at this meeting:
+
+          EOF
+          )
+
+          # Append agenda items
+          ISSUE_BODY="$ISSUE_BODY
+          $AGENDA_ITEMS
+
+          ---
+
+          ## Meeting Notes
+
+          **HackMD**: $HACKMD_URL
+
+          ---
+
+          *This agenda was automatically generated. To add items to a future meeting agenda, apply the \`${{ env.AGENDA_LABEL }}\` label to the relevant issue.*
+
+          *Issues labeled: ${{ steps.fetch-agenda-issues.outputs.issue_count }}*"
+
+          # Create the issue
+          ISSUE_RESPONSE=$(gh issue create \
+            --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}" \
+            --title "${{ steps.meeting-info.outputs.issue_title }}" \
+            --body "$ISSUE_BODY" \
+            --label "${{ env.ISSUE_LABEL }}")
+
+          echo "issue_url=$ISSUE_RESPONSE" >> $GITHUB_OUTPUT
+          echo "Issue created: $ISSUE_RESPONSE"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update HackMD with issue URL
+        if: steps.create-issue.outputs.issue_url != '' && steps.create-hackmd.outputs.hackmd_id != ''
+        run: |
+          # Re-read the template and update with issue URL
+          TEMPLATE_CONTENT=$(cat .github/templates/hackmd-agenda-template.md)
+          AGENDA_ITEMS=$(cat /tmp/agenda_issues.md)
+
+          # Replace all placeholders including the issue URL
+          TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\[DATE\]/${{ steps.meeting-info.outputs.meeting_date }}}"
+          TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\[NEXT_MEETING_DATE\]/${{ steps.meeting-info.outputs.next_meeting_date }}}"
+          TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\[AGENDA_ITEMS\]/$AGENDA_ITEMS}"
+          TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\[ISSUE_URL\]/${{ steps.create-issue.outputs.issue_url }}}"
+
+          # Update HackMD document
+          curl -s -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.HACKMD_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"content\": $(echo "$TEMPLATE_CONTENT" | jq -Rs .)
+            }" \
+            "https://api.hackmd.io/v1/notes/${{ steps.create-hackmd.outputs.hackmd_id }}"
+
+          echo "HackMD document updated with issue URL"
+
+      - name: Summary
+        run: |
+          echo "## Weekly Meeting Agenda Creation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.check-issue.outputs.existing_issue }}" == "true" ] && [ "${{ github.event.inputs.force_create }}" != "true" ]; then
+            echo "### Skipped - Issue Already Exists" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- **Existing Issue**: ${{ steps.check-issue.outputs.issue_url }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### Created Successfully" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- **Meeting Date**: ${{ steps.meeting-info.outputs.meeting_date }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **GitHub Issue**: ${{ steps.create-issue.outputs.issue_url }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **HackMD Document**: ${{ steps.create-hackmd.outputs.hackmd_url }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Agenda Items Found**: ${{ steps.fetch-agenda-issues.outputs.issue_count }}" >> $GITHUB_STEP_SUMMARY
+          fi
