@@ -18,7 +18,7 @@ on:
 
 env:
   REPO_OWNER: "openjs-foundation"
-  REPO_NAME: "security-collab-space"
+  REPO_NAME: "security-wg"
   AGENDA_LABEL: "security-agenda"
   ISSUE_LABEL: "security-meeting-agenda"
   # HackMD team path - the part after hackmd.io/@ in your team URL
