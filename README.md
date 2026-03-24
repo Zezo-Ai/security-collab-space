@@ -41,7 +41,6 @@ Our objectives are to:
 
 - Chris de Almeida ([@ctcpip](https://github.com/ctcpip))
 - Darcy Clarke ([@darcyclarke](https://github.com/darcyclarke))
-- Michael Dawson ([@mhdawson](https://github.com/mhdawson))
 - Ulises Gascón ([@UlisesGascon](https://github.com/UlisesGascon))
 - Robin Ginn ([@rginn](https://github.com/rginn))
 - Jordan Harband ([@ljharb](https://github.com/ljharb))
