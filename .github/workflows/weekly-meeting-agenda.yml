@@ -1,4 +1,4 @@
-name: Weekly Security Working Group Meeting Agenda
+name: Security Working Group Meeting Agenda
 
 on:
   schedule:
@@ -24,6 +24,9 @@ env:
   # HackMD team path - the part after hackmd.io/@ in your team URL
   # Leave empty to create notes in personal workspace
   HACKMD_TEAM: "openjs-security"
+  # iCal feed for the OpenJS Foundation calendar
+  ICAL_FEED_URL: "https://webcal.prod.itx.linuxfoundation.org/lfx/a0941000002wBygAAE"
+  MEETING_TITLE_MATCH: "Security Working Group"
 
 jobs:
   create-meeting-agenda:
@@ -36,31 +39,177 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install Python iCal dependencies
+        run: pip install icalendar python-dateutil
+
+      - name: Check calendar for upcoming meeting
+        id: calendar-check
+        run: |
+          if [ -n "${{ github.event.inputs.meeting_date }}" ]; then
+            TARGET_DATE="${{ github.event.inputs.meeting_date }}"
+          else
+            TARGET_DATE=$(date -d "next monday" +%Y-%m-%d)
+          fi
+
+          echo "Checking calendar for meeting on $TARGET_DATE..."
+
+          # Fetch the iCal feed
+          curl -sf -o /tmp/calendar.ics "${{ env.ICAL_FEED_URL }}"
+
+          # Parse the iCal feed and check for a matching meeting
+          python3 << 'PYEOF'
+          import sys
+          import os
+          from datetime import datetime, timedelta
+          from icalendar import Calendar
+          from dateutil.rrule import rrulestr
+          from dateutil import tz
+
+          target_str = os.environ["TARGET_DATE"]
+          match_title = os.environ["MEETING_TITLE_MATCH"]
+          target = datetime.strptime(target_str, "%Y-%m-%d").date()
+
+          with open("/tmp/calendar.ics", "rb") as f:
+              cal = Calendar.from_ical(f.read())
+
+          found = False
+          for component in cal.walk():
+              if component.name != "VEVENT":
+                  continue
+
+              summary = str(component.get("SUMMARY", ""))
+              if match_title.lower() not in summary.lower():
+                  continue
+
+              dtstart = component.get("DTSTART").dt
+              # Handle timezone-aware datetimes
+              if hasattr(dtstart, "date"):
+                  start_date = dtstart.date()
+              else:
+                  start_date = dtstart
+
+              rrule = component.get("RRULE")
+              if rrule:
+                  # Expand recurrence rule to check if target date is an occurrence
+                  rule_str = rrule.to_ical().decode()
+                  rule = rrulestr(rule_str, dtstart=dtstart)
+                  # Check a window around the target date
+                  window_start = datetime.combine(target, datetime.min.time())
+                  window_end = datetime.combine(target, datetime.max.time())
+                  if hasattr(dtstart, 'tzinfo') and dtstart.tzinfo:
+                      window_start = window_start.replace(tzinfo=dtstart.tzinfo)
+                      window_end = window_end.replace(tzinfo=dtstart.tzinfo)
+                  occurrences = rule.between(window_start, window_end, inc=True)
+                  if occurrences:
+                      found = True
+                      print(f"Found meeting: '{summary}' on {target}")
+                      break
+              else:
+                  # Single event, check if it falls on the target date
+                  if start_date == target:
+                      found = True
+                      print(f"Found meeting: '{summary}' on {target}")
+                      break
+
+          if found:
+              print("MEETING_FOUND=true")
+          else:
+              print(f"No '{match_title}' meeting found on {target}")
+              print("MEETING_FOUND=false")
+
+          # Write output for GitHub Actions
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"meeting_found={'true' if found else 'false'}\n")
+              f.write(f"target_date={target_str}\n")
+          PYEOF
+
+          echo "target_date=$TARGET_DATE" >> $GITHUB_OUTPUT
+        env:
+          TARGET_DATE: ${{ github.event.inputs.meeting_date || '' }}
+          MEETING_TITLE_MATCH: ${{ env.MEETING_TITLE_MATCH }}
+
+      - name: Skip - no meeting on calendar
+        if: steps.calendar-check.outputs.meeting_found != 'true' && github.event.inputs.force_create != 'true'
+        run: |
+          echo "## No Meeting Found" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "No '${{ env.MEETING_TITLE_MATCH }}' meeting found on the calendar for ${{ steps.calendar-check.outputs.target_date }}." >> $GITHUB_STEP_SUMMARY
+          echo "Skipping agenda creation." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "*To force creation, re-run with force_create enabled.*" >> $GITHUB_STEP_SUMMARY
+
       - name: Get meeting date info
         id: meeting-info
+        if: steps.calendar-check.outputs.meeting_found == 'true' || github.event.inputs.force_create == 'true'
         run: |
           if [ -n "${{ github.event.inputs.meeting_date }}" ]; then
             MEETING_DATE_INPUT="${{ github.event.inputs.meeting_date }}"
             MEETING_DATE=$(date -d "$MEETING_DATE_INPUT" +"%B %d, %Y")
             MEETING_DATE_SHORT="$MEETING_DATE_INPUT"
-            NEXT_MONDAY=$(date -d "$MEETING_DATE_INPUT + 7 days" +"%B %d, %Y")
           else
-            # Get next Monday's date
             MEETING_DATE_SHORT=$(date -d "next monday" +%Y-%m-%d)
             MEETING_DATE=$(date -d "next monday" +"%B %d, %Y")
-            NEXT_MONDAY=$(date -d "next monday + 7 days" +"%B %d, %Y")
           fi
+
+          # Find the next meeting date after this one by checking the calendar
+          python3 << PYEOF
+          import os
+          from datetime import datetime, timedelta
+          from icalendar import Calendar
+          from dateutil.rrule import rrulestr
+
+          target_str = "$MEETING_DATE_SHORT"
+          match_title = os.environ["MEETING_TITLE_MATCH"]
+          target = datetime.strptime(target_str, "%Y-%m-%d").date()
+
+          with open("/tmp/calendar.ics", "rb") as f:
+              cal = Calendar.from_ical(f.read())
+
+          # Find the next occurrence after target_date
+          next_date = None
+          for component in cal.walk():
+              if component.name != "VEVENT":
+                  continue
+              summary = str(component.get("SUMMARY", ""))
+              if match_title.lower() not in summary.lower():
+                  continue
+              dtstart = component.get("DTSTART").dt
+              rrule = component.get("RRULE")
+              if rrule:
+                  rule_str = rrule.to_ical().decode()
+                  rule = rrulestr(rule_str, dtstart=dtstart)
+                  # Look for the first occurrence after target
+                  search_start = datetime.combine(target + timedelta(days=1), datetime.min.time())
+                  if hasattr(dtstart, 'tzinfo') and dtstart.tzinfo:
+                      search_start = search_start.replace(tzinfo=dtstart.tzinfo)
+                  future = rule.after(search_start)
+                  if future:
+                      candidate = future.date() if hasattr(future, 'date') else future
+                      if next_date is None or candidate < next_date:
+                          next_date = candidate
+
+          if next_date:
+              formatted = next_date.strftime("%B %d, %Y")
+          else:
+              # Fallback to 2 weeks from now
+              formatted = (target + timedelta(days=14)).strftime("%B %d, %Y")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"next_meeting_date={formatted}\n")
+          PYEOF
 
           echo "meeting_date=$MEETING_DATE" >> $GITHUB_OUTPUT
           echo "meeting_date_short=$MEETING_DATE_SHORT" >> $GITHUB_OUTPUT
-          echo "next_meeting_date=$NEXT_MONDAY" >> $GITHUB_OUTPUT
 
           # Create issue title
           ISSUE_TITLE="Security Working Group Meeting - $MEETING_DATE"
           echo "issue_title=$ISSUE_TITLE" >> $GITHUB_OUTPUT
+        env:
+          MEETING_TITLE_MATCH: ${{ env.MEETING_TITLE_MATCH }}
 
       - name: Check for existing issue
         id: check-issue
+        if: steps.calendar-check.outputs.meeting_found == 'true' || github.event.inputs.force_create == 'true'
         run: |
           EXISTING_ISSUE=$(gh issue list \
             --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}" \
@@ -81,6 +230,7 @@ jobs:
 
       - name: Fetch issues with security-agenda label
         id: fetch-agenda-issues
+        if: steps.calendar-check.outputs.meeting_found == 'true' || github.event.inputs.force_create == 'true'
         run: |
           # Fetch all open issues with the security-agenda label
           AGENDA_ISSUES=$(gh issue list \
@@ -111,6 +261,7 @@ jobs:
 
       - name: Load and prepare HackMD template
         id: prepare-hackmd
+        if: steps.calendar-check.outputs.meeting_found == 'true' || github.event.inputs.force_create == 'true'
         run: |
           # Read the template
           TEMPLATE_CONTENT=$(cat .github/templates/hackmd-agenda-template.md)
@@ -128,7 +279,7 @@ jobs:
 
       - name: Create HackMD document
         id: create-hackmd
-        if: steps.check-issue.outputs.existing_issue == 'false' || github.event.inputs.force_create == 'true'
+        if: (steps.calendar-check.outputs.meeting_found == 'true' || github.event.inputs.force_create == 'true') && (steps.check-issue.outputs.existing_issue == 'false' || github.event.inputs.force_create == 'true')
         run: |
           # Read prepared content
           HACKMD_CONTENT=$(cat /tmp/hackmd_content.md)
@@ -190,7 +341,7 @@ jobs:
 
       - name: Create GitHub Issue
         id: create-issue
-        if: steps.check-issue.outputs.existing_issue == 'false' || github.event.inputs.force_create == 'true'
+        if: (steps.calendar-check.outputs.meeting_found == 'true' || github.event.inputs.force_create == 'true') && (steps.check-issue.outputs.existing_issue == 'false' || github.event.inputs.force_create == 'true')
         run: |
           HACKMD_URL="${{ steps.create-hackmd.outputs.hackmd_url }}"
 
@@ -269,8 +420,9 @@ jobs:
           echo "HackMD document updated with issue URL"
 
       - name: Summary
+        if: steps.calendar-check.outputs.meeting_found == 'true' || github.event.inputs.force_create == 'true'
         run: |
-          echo "## Weekly Meeting Agenda Creation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## Meeting Agenda Creation Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ "${{ steps.check-issue.outputs.existing_issue }}" == "true" ] && [ "${{ github.event.inputs.force_create }}" != "true" ]; then
