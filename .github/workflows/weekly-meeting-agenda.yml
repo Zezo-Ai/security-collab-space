@@ -19,8 +19,8 @@ on:
 env:
   REPO_OWNER: "openjs-foundation"
   REPO_NAME: "security-wg"
-  AGENDA_LABEL: "security-agenda"
-  ISSUE_LABEL: "security-meeting-agenda-item"
+  AGENDA_LABEL: "security-meeting-agenda-item"
+  ISSUE_LABEL: "security-meeting-agenda"
   # HackMD team path - the part after hackmd.io/@ in your team URL
   # Leave empty to create notes in personal workspace
   HACKMD_TEAM: "openjs-security"
